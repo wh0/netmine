@@ -1,0 +1,341 @@
+<html><head>
+<title>minesweeper</title>
+<style type="text/css">
+body{margin:0;font-size:11px;font-family:sans-serif;}
+body.done{background-color:#000000;color:#ffffff;}
+body.error{background-color:#c0c0c0;color:#808080;}
+#wrapper{margin:0 auto;width:480px;}
+#canvas{display:block;margin:20px 0;}
+#scores{margin:0;padding:0;list-style-type:none;text-align:center;}
+#scores li{display:inline;position:relative;margin:0 5px;}
+#scores .winner{font-weight:bold;}
+#scores .you{position:absolute;left:0;right:0;top:1em;margin:0 auto;font-weight:normal;}
+</style>
+<script type="text/javascript">
+var WIDTH = 30;
+var HEIGHT = 16;
+var SIZE = 16;
+
+var MINES_AROUND = 0xf;
+var MARKS_AROUND = 0xf0;
+var MINE = 0x100;
+var OPEN = 0x200;
+var MARK = 0x400;
+
+var field = null;
+var canvas = null;
+var context = null;
+var graphics = null;
+var scores = null;
+
+var locked = true;
+var dx = 0;
+var dy = 0;
+var row = -1;
+var col = -1;
+var left = false;
+var right = false;
+
+var uid = null;
+var password = null;
+var outgoing = [];
+
+function init() {
+	canvas = document.getElementById('canvas');
+	canvas.addEventListener('mousemove', move, false);
+	canvas.addEventListener('mousedown', down, false);
+	canvas.addEventListener('mouseup', up, false);
+	canvas.addEventListener('contextmenu', discard, false);
+	context = canvas.getContext('2d');
+	graphics = document.getElementById('graphics');
+	graphics.addEventListener('load', load, false);
+	scores = document.getElementById('scores');
+	window.addEventListener('resize', resize, false);
+	resize();
+}
+
+function load(e) {
+	field = new Array(HEIGHT);
+	for (var r = 0; r < HEIGHT; r++) {
+		field[r] = new Array(WIDTH);
+		for (var c = 0; c < WIDTH; c++) {
+			field[r][c] = 0;
+			cell(r, c, 9);
+		}
+	}
+	connect();
+}
+
+function connect() {
+	var xhr = new XMLHttpRequest();
+	xhr.open('GET', 'connect');
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState < 4) return;
+		if (xhr.status != 200) return error();
+		eval(xhr.responseText);
+		listen();
+	};
+	xhr.send(null);
+}
+
+function listen() {
+	var xhr = new XMLHttpRequest();
+	xhr.open('GET', 'listen/' + uid + '/' + password);
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState < 4) return;
+		if (xhr.status != 200) return error();
+		eval(xhr.responseText);
+		listen();
+	};
+	xhr.send(null);
+}
+
+function error() {
+	document.body.className = 'error';
+	locked = true;
+}
+
+function flush() {
+	if (!outgoing.length) return;
+	outgoing = outgoing.join(',');
+	var xhr = new XMLHttpRequest();
+	xhr.open('GET', 'open/' + uid + '/' + password + '/' + outgoing);
+	xhr.send(null);
+	outgoing = [];
+}
+
+function resize() {
+	var rect = canvas.getBoundingClientRect();
+	dx = rect.left;
+	dy = rect.top;
+}
+
+function discard(e) {
+	e.preventDefault();
+}
+
+function move(e) {
+	if (left) {
+		release(row, col);
+		if (right) propagate(release, row, col);
+	}
+	row = 0 | ((e.pageY - dy) / SIZE);
+	col = 0 | ((e.pageX - dx) / SIZE);
+	if (left) {
+		depress(row, col);
+		if (right) propagate(depress, row, col);
+	}
+}
+
+function down(e) {
+	if (locked) return;
+	if (e.button == 0) {
+		left = true;
+		depress(row, col);
+		if (right) propagate(depress, row, col);
+		e.preventDefault();
+	} else if (e.button == 2) {
+		if (!right) {
+			right = true;
+			if (left) {
+				depress(row, col);
+				propagate(depress, row, col);
+			} else {
+				mark(row, col);
+			}
+		}
+		e.preventDefault();
+	}
+}
+
+function up(e) {
+	if (locked) return;
+	if (e.button == 0) {
+		left = false;
+		release(row, col);
+		if (right) {
+			propagate(release, row, col);
+			special(row, col);
+		} else {
+			open(row, col);
+			flush();
+		}
+		e.preventDefault();
+	} else if (e.button == 2) {
+		right = false;
+		if (left) {
+			left = false;
+			release(row, col);
+			propagate(release, row, col);
+			special(row, col);
+		}
+		e.preventDefault();
+	}
+}
+
+function mine(n) {
+	var r = 0 | (n / WIDTH);
+	var c = 0 | (n % WIDTH);
+	field[r][c] |= MINE;
+	propagate(incMines, r, c);
+}
+
+function reveal(n) {
+	var r = 0 | (n / WIDTH);
+	var c = 0 | (n % WIDTH);
+	if (field[r][c] & OPEN) return;
+	field[r][c] |= OPEN;
+	if (field[r][c] & MINE) {
+		cell(r, c, 11);
+		propagate(incMarks, r, c);
+	} else {
+		cell(r, c, field[r][c] & MINES_AROUND);
+	}
+}
+
+function score(u, s) {
+	var disp = document.getElementById('score_' + u);
+	if (!disp) {
+		disp = document.createElement('li');
+		disp.id = 'score_' + u;
+		disp.appendChild(document.createTextNode(''));
+		scores.appendChild(disp);
+	}
+	disp.firstChild.nodeValue = s;
+}
+
+function disconnect(u) {
+	var disp = document.getElementById('score_' + u);
+	if (!disp) return;
+	scores.removeChild(disp);
+}
+
+function start(u, p) {
+	uid = u;
+	password = p;
+	var you = document.createElement('span');
+	you.className = 'you';
+	you.appendChild(document.createTextNode('^'));
+	document.getElementById('score_' + uid).appendChild(you);
+	locked = false;
+}
+
+function done(a) {
+	var max = -3000;
+	for (var disp = scores.firstChild; disp; disp = disp.nextSibling) {
+		var s = parseInt(disp.firstChild.nodeValue, 10);
+		if (s > max) max = s;
+	}
+	max = max.toString();
+	for (var disp = scores.firstChild; disp; disp = disp.nextSibling) {
+		if (disp.firstChild.nodeValue == max) disp.className = 'winner';
+	}
+	document.body.className = 'done';
+	locked = true;
+}
+
+function restart() {
+	for (var r = 0; r < HEIGHT; r++) {
+		for (var c = 0; c < WIDTH; c++) {
+			field[r][c] = 0;
+			cell(r, c, 9);
+		}
+	}
+	for (var disp = scores.firstChild; disp; disp = disp.nextSibling) {
+		disp.firstChild.nodeValue = '0';
+		disp.className = '';
+	}
+	document.body.className = '';
+	locked = false;
+}
+
+function depress(r, c) {
+	if (!bound(r, c)) return;
+	if (field[r][c] & (OPEN | MARK)) return;
+	cell(r, c, 0);
+}
+
+function release(r, c) {
+	if (!bound(r, c)) return;
+	if (field[r][c] & (OPEN | MARK)) return;
+	cell(r, c, 9);
+}
+
+function open(r, c) {
+	if (!bound(r, c)) return;
+	if (field[r][c] & (OPEN | MARK)) return;
+	field[r][c] |= OPEN;
+	outgoing.push(r * WIDTH + c);
+	if (field[r][c] & MINE) {
+		cell(r, c, 11);
+		propagate(incMarks, r, c);
+	} else {
+		cell(r, c, field[r][c] & MINES_AROUND);
+		if ((field[r][c] & MINES_AROUND) == 0) propagate(open, r, c);
+	}
+}
+
+function mark(r, c) {
+	if (!bound(r, c)) return;
+	if (field[r][c] & OPEN) return;
+	if (field[r][c] & MARK) {
+		cell(r, c, 9);
+		field[r][c] &= ~MARK;
+		propagate(decMarks, r, c);
+	} else {
+		cell(r, c, 10);
+		field[r][c] |= MARK;
+		propagate(incMarks, r, c);
+	}
+}
+
+function special(r, c) {
+	if (!bound(r, c)) return;
+	if (!(field[r][c] & OPEN) || field[r][c] & MINE) return;
+	if ((field[r][c] & MINES_AROUND) != (field[r][c] & MARKS_AROUND) >> 4) return;
+	propagate(open, r, c);
+	flush();
+}
+
+function incMines(r, c) {
+	if (!bound(r, c)) return;
+	field[r][c] += 0x1;
+}
+
+function incMarks(r, c) {
+	if (!bound(r, c)) return;
+	field[r][c] += 0x10;
+}
+
+function decMarks(r, c) {
+	if (!bound(r, c)) return;
+	field[r][c] -= 0x10;
+}
+
+function propagate(f, r, c) {
+	f(r - 1, c - 1);
+	f(r - 1, c    );
+	f(r - 1, c + 1);
+	f(r    , c - 1);
+	f(r    , c + 1);
+	f(r + 1, c - 1);
+	f(r + 1, c    );
+	f(r + 1, c + 1);
+}
+
+function bound(r, c) {
+	return r >= 0 && r < HEIGHT && c >= 0 && c < WIDTH;
+}
+
+function cell(r, c, i) {
+	context.drawImage(graphics, i * SIZE, 0, SIZE, SIZE, c * SIZE, r * SIZE, SIZE, SIZE);
+}
+</script>
+</head><body>
+<div id="wrapper">
+<img id="graphics" style="display:none;" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAAAQCAYAAABA4nAoAAABtUlEQVRoge2ZUY7DIAxEfW+fjbNlf5oqJcYem7CBxJVGVVVNoDAvsSkx85ZKRdXzKqV0+3vnT8y8lVLCSv+7/b3hvSL8G1FYCUD6u/zHQHrHPQIQ9VsA0N0A7GOhfmJSpfkR4pH5E/FX0ueWn4kg6b+fVWnj02fDLWnjWyXDfwLQ2rNlADiOhfit8EsQeAGoF3QmAKzwjwYArZtHA2DdtDQA6PBeSwJiGAB17rwAnK4HAKAJBUAKewSAyPppQfeu/3k/fABogRsJAPLU1gBohZ+E8A8DQLrxdm9gAvAKACQIPAB8g/55WRBMVQJZwbd6AG0RW4v5W0IwJAQApPzRAIiUQN7wS/7Ve4DHAIA0wCsC0NsD1BA8GYB97ggAaP9z6glmAwANvicANRD+AGElkDpPJwCnOQQB0MJf+2cpgSIA1E8AtA+YCgBP8BOAZwOgnVxND0Cj+hBB0AC46xg0CsBsJZAVfg0AtAy6GgD0CHe5U6BZAEDmPxIAa/wrm2AvAAgEtX82AKb5HyD97/CP7gEsv/QEkIBofn/3AqZ/bf8eXrR8qtXrTwDSf6t/v0ZUvX4LAEt/qC0/r5msmvwAAAAASUVORK5CYII=">
+<canvas id="canvas" width="480" height="256"></canvas>
+<ul id="scores"></ul>
+</div>
+<script type="text/javascript">init();</script>
+</body></html>
